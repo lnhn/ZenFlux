@@ -9,5 +9,5 @@ def start_new_life():
     print("今日目标：不求通透，只求一行代码运行成功。")
 
 if __name__ == "__main__":
-    start_new_lift()
+    start_new_life()
 
