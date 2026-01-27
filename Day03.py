@@ -169,3 +169,45 @@ def main(config: Optional[MarketConfig] = None) -> MarketSeries:
 
 if __name__ == "__main__":
     main()
+
+# =====================
+# 6. Day03 Summary (Notes)
+# =====================
+# 量化内容（今天学到的核心概念）
+# 1. 把“市场”抽象为对象（MarketSeries），把价格序列看作可加工的时间序列。
+# 2. 用收益率 ret = close.pct_change() 描述相对变化，而不是只看价格绝对值。
+# 3. 用滚动均线（MA）做平滑与趋势刻画：ma_10, ma_50 等。
+# 4. 用均线差分 diff = ma_fast - ma_slow 定义信号：
+#    - Golden Cross（金叉）：diff 从 <=0 变为 >0
+#    - Death Cross（死叉）：diff 从 >=0 变为 <0
+# 5. 可视化时把信号点标在 fast MA 上，更贴近交叉位置。
+#
+# 代码内容（今天实现了什么）
+# 1. 数据获取：load_data()
+#    - 正常路径：AkShare 下载 A 股日线数据
+#    - 兜底路径：网络/环境受限时，用随机游走生成 synthetic 数据
+# 2. 数据标准化：统一列名为 date/close，并把 date 设为索引。
+# 3. 核心类：MarketSeries
+#    - returns(): 计算收益率列 ret
+#    - rolling_mean(): 计算多个窗口的均线列 ma_{window}
+#    - cross_signal(): 计算金叉/死叉布尔信号列
+#    - dropna(): 清理空值
+#    - plot(): 绘制 close、均线与信号点
+# 4. 入口函数：main(config)
+#    - 串联完整流程：加载数据 → 特征 → 信号 → 清洗 → 画图
+#
+# 工程化内容（从“实验脚本”向“可维护模块”的改造）
+# 1. 配置集中化：引入 MarketConfig（dataclass）管理参数。
+# 2. 类型标注：为函数和方法添加返回类型，提高可读性与可维护性。
+# 3. 前向引用优化：使用 from __future__ import annotations，
+#    因而可以写 -> MarketSeries 而无需引号。
+# 4. 参数健壮性：_normalize_windows() 负责：
+#    - 合并 windows 与 fast/slow
+#    - 去重、排序、过滤非法窗口
+# 5. 更稳的计算策略：
+#    - rolling_mean() 不重复覆盖已有均线列
+#    - cross_signal() 仅在缺失时补算对应均线
+# 6. 基本可观测性：加入 logging，在数据下载失败时给出结构化提示。
+#
+# 今天的整体收获（用一句话总结）
+# - 我们不仅“算出了指标和信号”，还把它整理成了“有边界、有配置、有注释”的小型研究模块。
