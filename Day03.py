@@ -9,16 +9,48 @@ Theme:
 #1. Imports
 #===
 
-import akshare as ak 
-import pandas as pd
-import numpy as np
-import matplotlib.pyplot as plt
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Iterable, List, Optional, Sequence
+import logging
 import warnings
+
+import akshare as ak
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+
+logger = logging.getLogger(__name__)
 #===
-#2. Data Loading 
+#2. Configuration
 #====
 
-def load_data(symbol="600519",start_date="20220101",end_date="20251231"):
+@dataclass(frozen=True)
+class MarketConfig:
+    symbol: str = "600519"
+    start_date: str = "20220101"
+    end_date: str = "20251231"
+    windows: List[int] = field(default_factory=lambda: [10, 50])
+    fast: int = 10
+    slow: int = 50
+
+
+def _normalize_windows(windows: Sequence[int], fast: int, slow: int) -> List[int]:
+    """Return sorted, unique, positive MA windows that include fast and slow."""
+    merged = list(windows) + [fast, slow]
+    normalized = sorted({w for w in merged if isinstance(w, int) and w > 0})
+    if not normalized:
+        raise ValueError("At least one positive integer window is required.")
+    return normalized
+
+
+#===
+#3. Data Loading 
+#====
+
+def load_data(symbol: str = "600519", start_date: str = "20220101", end_date: str = "20251231") -> pd.DataFrame:
+    """Load daily close prices from AkShare; fall back to synthetic data offline."""
     try:
         df = ak.stock_zh_a_hist(
             symbol=symbol,
@@ -29,6 +61,7 @@ def load_data(symbol="600519",start_date="20220101",end_date="20251231"):
         )
     except Exception as exc:
         # In restricted or offline environments, AkShare may fail to reach its data source.
+        logger.warning("AkShare download failed; using synthetic data instead: %s", exc)
         warnings.warn(
             f"AkShare data download failed ({exc}). Falling back to synthetic data.",
             RuntimeWarning,
@@ -39,61 +72,70 @@ def load_data(symbol="600519",start_date="20220101",end_date="20251231"):
         df = pd.DataFrame({"日期": dates, "收盘": close})
 
     df = df[['日期', '收盘']]
-    df.columns = ['date','close']
+    df.columns = ['date', 'close']
     df['date'] = pd.to_datetime(df['date'])
-    df.set_index('date',inplace=True)
-    return df 
+    df.set_index('date', inplace=True)
+    return df
 
 # =====================
-# 3. MarketSeries Class
+# 4. MarketSeries Class
 # =====================
 
 
 class MarketSeries:
-    def __init__(self,df,windows=[10]):
+    def __init__(self, df: pd.DataFrame, windows: Iterable[int] = (10,)) -> None:
+        if 'close' not in df.columns:
+            raise ValueError("DataFrame must contain a 'close' column.")
         self.df = df.copy()
-        self.windows = windows
-    def returns(self):
-        self.df['ret']=self.df['close'].pct_change()
+        self.windows = list(windows)
+
+    def returns(self) -> MarketSeries:
+        self.df['ret'] = self.df['close'].pct_change()
         return self
-    def rolling_mean(self):
+
+    def rolling_mean(self) -> MarketSeries:
         for window in self.windows:
-            self.df[f'ma_{window}'] = self.df['close'].rolling(window).mean()
-        return self 
-    def dropna(self):
+            ma_col = f'ma_{window}'
+            if ma_col not in self.df.columns:
+                self.df[ma_col] = self.df['close'].rolling(window).mean()
+        return self
+
+    def dropna(self) -> MarketSeries:
         self.df.dropna(inplace=True)
         return self
-    def cross_signal(self,fast=10,slow=50):
+
+    def cross_signal(self, fast: int = 10, slow: int = 50) -> MarketSeries:
         fast_col = f'ma_{fast}'
-        low_col = f'ma_{slow}'
-        # Always (re)compute the moving averages used for the signal.
-        self.df[fast_col] = self.df['close'].rolling(fast).mean()
-        self.df[low_col] = self.df['close'].rolling(slow).mean()
+        slow_col = f'ma_{slow}'
+        # Ensure the moving averages used for the signal exist.
+        if fast_col not in self.df.columns:
+            self.df[fast_col] = self.df['close'].rolling(fast).mean()
+        if slow_col not in self.df.columns:
+            self.df[slow_col] = self.df['close'].rolling(slow).mean()
 
-        diff = self.df[fast_col]-self.df[low_col]
+        diff = self.df[fast_col] - self.df[slow_col]
 
-        self.df['golden_cross'] = (diff >0) & (diff.shift(1)<=0)
-        self.df['death_cross'] = (diff <0) & (diff.shift(1)>=0)
+        self.df['golden_cross'] = (diff > 0) & (diff.shift(1) <= 0)
+        self.df['death_cross'] = (diff < 0) & (diff.shift(1) >= 0)
 
         self.df['golden_cross'] = self.df['golden_cross'].fillna(False)
         self.df['death_cross'] = self.df['death_cross'].fillna(False)
 
-        return self 
-   
-    
-    def plot(self):
+        return self
+
+    def plot(self) -> MarketSeries:
         # Ensure signals exist so plotting does not crash when cross_signal was not called.
         if 'golden_cross' not in self.df.columns or 'death_cross' not in self.df.columns:
             fast = self.windows[0] if self.windows else 10
             slow = self.windows[1] if len(self.windows) > 1 else max(50, fast * 2)
-            self.cross_signal(fast=fast, low=slow)
-        fig,ax = plt.subplots(figsize=(12,6))
-        self.df['close'].plot(ax=ax,label='close',alpha=0.78)
+            self.cross_signal(fast=fast, slow=slow)
+        fig, ax = plt.subplots(figsize=(12, 6))
+        self.df['close'].plot(ax=ax, label='close', alpha=0.78)
 
         for window in self.windows:
             ma_col = f'ma_{window}'
             if ma_col in self.df.columns:
-                self.df[ma_col].plot(ax=ax,label=ma_col)
+                self.df[ma_col].plot(ax=ax, label=ma_col)
 
         # Plot cross markers on the fast MA (closer to the actual intersection than close price).
         fast = self.windows[0] if self.windows else 10
@@ -112,11 +154,18 @@ class MarketSeries:
 
 
 #=====================
-#5. Experimental Code 
+#5. Entry Point
 #=====================
 
+def main(config: Optional[MarketConfig] = None) -> MarketSeries:
+    cfg = config or MarketConfig()
+    windows = _normalize_windows(cfg.windows, fast=cfg.fast, slow=cfg.slow)
+    data = load_data(symbol=cfg.symbol, start_date=cfg.start_date, end_date=cfg.end_date)
+    series = MarketSeries(data, windows=windows)
+    series.returns().rolling_mean().cross_signal(fast=cfg.fast, slow=cfg.slow).dropna()
+    series.plot()
+    return series
+
+
 if __name__ == "__main__":
-    data = load_data()
-    marketSeries = MarketSeries(data,windows=[10,50])
-    marketSeries.returns().rolling_mean().cross_signal(fast=10, slow=50).dropna()
-    marketSeries.plot()
+    main()
